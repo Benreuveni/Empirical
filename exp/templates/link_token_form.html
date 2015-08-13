@@ -1,0 +1,14 @@
+{% extends "base_report.html" %}
+
+{% block content %}
+
+    <h1>Create link tokens for {{ exp_name }}</h1>
+    <form action="#" method="post" enctype="multipart/form-data">
+        {% csrf_token %} {{ form }}
+        <input type="submit" value="Create" />
+    </form>
+    <hr>
+    {% for s in sessions %}
+        <li>{{ s }}</li>
+    {% endfor %}
+{% endblock %}

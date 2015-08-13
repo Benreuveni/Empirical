@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <link type="text/css" rel="stylesheet" href="stylesheet.css"/>
+    <meta charset="utf-8"/>
+    <title>Canvas tutorial</title>
+    <script type="text/javascript" src="image-preload.js"></script>
+    <script type="text/javascript" src="Visual%20Category%20Learning.js"></script>
+    <script type="text/javascript" src="state-machine.js"></script>
+    <script src="server.js"></script>
+</head>
+
+    <script type="text/javascript">
+        function main() {
+            var sessionToken='00670499'; // default value for now
+            ServerHelper.request_config(sessionToken);
+            // extract sessiontoken from url
+            var url = document.URL;
+            var params = url.split('?');
+
+            if (params.length < 2) {
+                console.log("No session token in url"); // should prompt probably
+            }
+            else {
+                t = params[1].match("session=([^&]*)");
+                if (t != null) {
+                    sessionToken = t[1]
+                }
+             }
+            window.requestAnimationFrame(cfgIsReady);
+            function cfgIsReady() {
+                if (ServerHelper.config_received === true) {
+                    var cfg = JSON.parse(ServerHelper.config_file);
+                    img_preload(cfg);
+                }else{
+                    window.requestAnimationFrame(cfgIsReady);
+                }
+            }
+
+        }
+
+    </script>
+<body onload="main()">
+
+<canvas id="VisCat" width="600" height="600"></canvas>
+<style type="text/css"> canvas { border: 1px solid black; margin-left: 600px; margin-top: 100px}</style>
+</body>
+</html>

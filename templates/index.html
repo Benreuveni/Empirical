@@ -1,0 +1,16 @@
+{% extends "base_main.html" %}
+
+{% load staticfiles %}
+
+{% block content %}
+    <h2>Main Page</h2>
+    <ul>
+    <li><a href="{% url 'uploader_index' %}">Go to uploader</a></li>
+    <li><a href="{% url 'exp_index' %}">See uploaded experiment information</a></li>
+    </ul>
+    <h2>Experiment apps</h2>
+    <ul>
+        <li><a href="{% static "SISL.html" %}">SISL</a></li>
+        <li><a href="{% static "VisCat.html" %}">VisCat</a></li>
+    </ul>
+{% endblock %}

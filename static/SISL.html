@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+    <meta charset="UTF-8">
+    <title>SISL</title>
+    <style>
+        #canvas {
+            padding-left: 0;
+            padding-right: 0;
+            margin-left: auto;
+            margin-right: auto;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+<div>
+    <canvas id="mainWin" width="800" height="600" style="border:1px solid #000000;"></canvas>
+</div>
+
+<p id="debug1"></p>
+<p id="debug2"></p>
+<p id="debug3"></p>
+<p id="debug4"></p>
+<p id="output_log"></p>
+
+<script src="server.js"></script>
+<script src="preload.js"></script>
+
+<script>
+    // Canvas required globals
+    var canvas = document.getElementById("mainWin");
+    var _version = "SISL.js 0.1 Aug 2015";
+    var ctx = canvas.getContext("2d");
+    var requestId = 0;
+
+    // required globals -- response_log, cfg array for configuration information, images list of images
+    var cfg = {};            // holds all configuration variable information
+    var images = {};         // list of images to be used in experiment
+    var response_log = [];   // list of log strings to be uploaded
+
+    var sessionToken=''; // default value for now
+
+    // SISL specific variables
+    var session = []; // holds the structure of the session information
+    var session_state_counter=0;
+    var session_state=0;
+    var config_parsed=false;
+    var initialized=false;
+    var cue_set = [];
+    var lane_set = [];
+    var anim_list = [];
+    var current_speed=1.5;
+    var current_cue=0;
+    var cue_debug=true;
+
+    var trial_counter=0;
+    //var block_trial_counter=0;
+    var block_trial_max=0;
+    var break_image_file='';
+
+    var block_start = window.performance.now();
+    var last_launch = window.performance.now();
+    var count = 0;
+
+    function distance3(p1,p2){
+        return Math.sqrt(((p1[0]-p2[0])*(p1[0]-p2[0]))+((p1[1]-p2[1])*(p1[1]-p2[1]))+((p1[2]-p2[2])*(p1[2]-p2[2])))
+    }
+
+    // DATA STRUCTURES: lane, cue, anim, speed_adj
+
+    // lane holds all the lane information on which the cues move -- start, end and target locations, cue display, etc.
+    var lane = function(start,target,delta,color,size,pad_color,pad_size) {
+        this.start=start;
+        this.target=target;
+        this.total_distance=distance3(start,target);
+        this.delta=delta;
+        this.end=[0,0,0];
+        for(var i=0;i<3;i++) this.end[i]=start[i]+delta[i];
+        this.cue_color=color;
+        this.cue_size=size;
+        this.target_size=pad_size;
+        this.target_color=pad_color;
+        this.key='';
+        this.add_letter=false;
+        this.draw_pad=function() {
+            ctx.beginPath();
+            ctx.fillStyle= this.target_color;
+            ctx.arc(this.target[0], this.target[1], this.target_size, 0, Math.PI*2, true);
+            ctx.closePath();
+            ctx.stroke();
+
+            if(this.add_letter==true){
+                ctx.font = this.letter_size.toString()+"px Arial";
+                ctx.fillStyle= this.letter_color;
+                ctx.textAlign="center";
+                ctx.fillText(this.target_letter,this.letter_x,this.letter_y);
+            }
+        };
+        this.add_letter=function(x,y,color,size,letter) {
+            this.add_letter=true;
+            this.letter_x=x;
+            this.letter_y=y;
+            this.letter_color=color;
+            this.letter_size=size;
+            this.target_letter=letter;
+        };
+        this.distance=function(pos){
+            // determine distance from pos to target as a fraction of the travel distance
+            d=distance3(pos,[this.target[0],this.target[1],this.target[2]]);
+            return d/this.total_distance;
+        }
+    }
+
+    // cue holds all the information about the moving cues on the screen, many of this variables are set from the lane it is in
+    // update with cue based velocity instead of percent of way to finish
+    var cue = function() {
+        this.active=false;
+        this.pos=[0,0,0]; // (x,y,z)
+        this.radius=25; // these defaults (size, color) shouldn't get used -- launch sets these values from lane
+        this.color='blue';
+        this.cue_lane=0;
+        this.scored=false;
+        this.trial_num=0;
+        this.last_move=0;
+        this.velocity=[0,0,0]; // (dx, dy, dz)
+        this.draw=function() {
+            ctx.beginPath();
+            ctx.arc(this.pos[0], this.pos[1], this.radius*(this.pos[2]/100.0), 0, Math.PI*2, true);
+            ctx.closePath();
+            /*if(cue_debug) {
+                if (this.scored == false) { ctx.fillStyle = this.color; }
+                else { ctx.fillStyle = 'red'; }
+            } else {
+                ctx.fillStyle = this.color;
+            }*/
+            ctx.fillStyle = this.color;
+            ctx.fill();
+            // draw stim number for debugging
+            //ctx.fillStyle = 'black';
+            //ctx.textAlign="center";
+            //ctx.fillText(this.trial_num.toString(),this.pos[0],this.pos[1]);
+
+        }
+        this.move=function() {  //new_pos) {
+            var curr = window.performance.now();
+            var elap = curr - this.last_move; // time since last update in ms
+            this.pos[0] += this.velocity[0] * elap;
+            this.pos[1] += this.velocity[1] * elap;
+            this.pos[2] += this.velocity[2] * elap;
+
+            // check for off-screen
+            if (this.pos[0] > lane_set[this.cue_lane].end[0] ||
+                    this.pos[1] > lane_set[this.cue_lane].end[1] ||
+                    this.pos[2] > lane_set[this.cue_lane].end[2]) {
+                this.active = false;
+                if(this.scored==false) {
+                    this.scored = true;
+                    score_response('miss', -1, this.cue_lane, [this.trial_num]);
+                }
+            }
+
+            // update last move, current target distance
+            this.last_move = curr;
+            this.distance=lane_set[this.cue_lane].distance(this.pos); // fractional distance from current position to target pad
+        }
+
+        this.launch=function(lane_num,launch_time,trial,travel_time) {
+            this.active=true;
+            this.scored=false;
+            this.last_move=launch_time;
+            this.cue_lane=lane_num;
+            this.trial_num=trial;
+            this.radius=lane_set[this.cue_lane].cue_size;
+            this.color=lane_set[this.cue_lane].cue_color;
+            //this.move(0.0);
+            this.pos[0]=lane_set[this.cue_lane].start[0];
+            this.pos[1]=lane_set[this.cue_lane].start[1];
+            this.pos[2]=lane_set[this.cue_lane].start[2];
+            // velocity in pixels per ms
+            this.velocity[0]=(lane_set[this.cue_lane].delta[0])/travel_time;
+            this.velocity[1]=(lane_set[this.cue_lane].delta[1])/travel_time;
+            this.velocity[2]=(lane_set[this.cue_lane].delta[2])/travel_time;
+        }
+        this.adjust_speed=function(speed_fraction) {
+            //var ov=this.velocity[1];
+            this.velocity[0]*=speed_fraction;
+            this.velocity[1]*=speed_fraction;
+            this.velocity[2]*=speed_fraction;
+            //console.log(ov,this.velocity[1],speed_fraction);
+        }
+    }
+
+    // other animated objects on the canvas that aren't moving cues or pads
+    // On screen elements to support:
+    // # trials, num_correct, num_incorrect, seq_correct, foil_correct
+    // # percent_correct, percent_correct_seq, percent_correct_foil, sspa
+    // # score, streak, longest_streak, current_item
+    // -- progress bars
+
+    var anim = function(anim_type,frames,args) {
+        this.anim_type = anim_type;
+        this.anim_args = args;
+        this.frame_count = 0;
+        this.max_frames = frames;
+        this.active = true;
+        this.dynamic = false;
+        this.draw = function () { // return function is false if this item is done, true if will continue to be animated
+            if(this.active==false) return false;
+            if(this.max_frames>=0 && this.frame_count>this.max_frames) {
+                this.active=false;
+                return false;
+            }
+            if(this.anim_type == 'flash-pos' || this.anim_type == 'flash-neg') { // pos/neg feedback flashes
+                px=lane_set[this.anim_args[0]].target[0];
+                py=lane_set[this.anim_args[0]].target[1];
+                sz=lane_set[this.anim_args[0]].cue_size;
+                ctx.beginPath();
+                ctx.arc(px, py, sz, 0, Math.PI*2, true);
+                ctx.closePath();
+                ctx.fillStyle=this.anim_args[1];
+                ctx.fill();
+                this.frame_count++;
+            }
+            else if(this.anim_type=='text'){
+                var text='';
+                // implement other on screen elements
+                // 'speed','speed_info','seq_correct','foil_correct','seq_pc','foil_pc','streak','sspa'
+                if(this.anim_args[2]=='speed') text="Speed "+current_speed.toFixed(2);
+                else if(this.anim_args[2]=='speed_info') text=Speeder.speed_correct_counter.toString()+" correct of "+Speeder.speed_trials_counter.toString();
+                else if(this.anim_args[2]=='seq_correct') text="Seq correct "+stats.seq_correct.toString();
+                else if(this.anim_args[2]=='seq_trials') text="Seq trials "+stats.seq_trials.toString();
+                else if(this.anim_args[2]=='foil_correct') text="Foil correct "+stats.foil_correct.toString();
+                else if(this.anim_args[2]=='foil_trials') text="Foil trials "+stats.foil_trials.toString();
+                else if(this.anim_args[2]=='seq_pc') text="Seq % "+stats.seq_pc.toFixed(2);
+                else if(this.anim_args[2]=='foil_pc') text="Foil % "+stats.foil_pc.toFixed(2);
+                else if(this.anim_args[2]=='streak') text="Streak "+stats.streak.toString();
+                else if(this.anim_args[2]=='longest_streak') text="Longest streak "+stats.longest_streak.toString();
+                else if(this.anim_args[2]=='sspa') text="SSPA "+stats.sspa.toFixed(2);
+                else if(this.anim_args[2]=='fps') text="FPS "+stats.fps.toFixed(1);
+                else text='unknown'; // add other elements here
+                ctx.font = cfg['text_size'].toString()+"px Arial";
+                ctx.fillStyle='black';
+                ctx.textAlign='left';
+                ctx.fillText(text,this.anim_args[0],this.anim_args[1]);
+            }
+            return this.dynamic; // if a dynamic item is being animated, return true; this used to wait to terminate block
+        }
+        this.add_text = function(x,info_type) {
+            var y=100;
+            for(var i=0;i<anim_list.length;i++){
+                if(anim_list[i].anim_type=='text') {
+                    y=y+cfg['text_height'];
+                }
+            }
+            this.max_frames = -1;
+            this.anim_args=[x,y,info_type];
+        }
+    }
+
+    // speed adjustment object for increasing/decreasing speed based on performance
+    var speed_adj = function(checkevery,thresholds,fraction){
+        this.speed_trials_counter=0;
+        this.speed_correct_counter=0;
+        this.last_trial_scored= -1;
+        this.checkevery=checkevery;
+        this.thresh_down=thresholds[0]*this.checkevery;
+        this.thresh_up=thresholds[1]*this.checkevery;
+        this.fraction=fraction;
+        this.score_correct=function(trial_num){
+            if(trial_num>this.last_trial_scored){
+                this.speed_trials_counter++;
+                this.speed_correct_counter++;
+                this.check_speed();
+            }
+        }
+        this.score_incorrect=function(trial_num){
+            if(trial_num>this.last_trial_scored){
+                this.speed_trials_counter++;
+                this.check_speed();
+            }
+        }
+        this.check_speed=function(){
+            if(this.speed_trials_counter>=this.checkevery){ // will need to update velocity for all activte cues
+                var f=1.0;
+                if(this.speed_correct_counter>this.thresh_up){
+                    f=(this.fraction[0]/this.fraction[1]);
+                    current_speed=current_speed*f;
+                    log_event('faster',[current_cue,this.speed_correct_counter,this.thresh_up, f.toFixed(3)]);
+                }
+                else if(this.speed_correct_counter<this.thresh_down){
+                    current_speed=current_speed*(this.fraction[1]/this.fraction[0]);
+                    f=(this.fraction[1]/this.fraction[0]);
+                    current_speed=current_speed*f;
+                    log_event('slower',[current_cue,this.speed_correct_counter,this.thresh_up, f.toFixed(3)]);
+                }
+                if(f!=1.0){
+                    // update the speed of each cue, velocity is inverted compared to speed
+                    for(var i=0;i<cue_set.length;i++) cue_set[i].adjust_speed(1.0/f);
+                }
+                this.speed_trials_counter=0;
+                this.speed_correct_counter=0;
+            }
+        }
+    }
+
+    var stats = {
+        reset: function() {
+            this.seq_trials=0;
+            this.seq_correct=0;
+            this.seq_pc=0;
+            this.foil_trials=0;
+            this.foil_correct=0;
+            this.foil_pc=0;
+            this.last_fps=window.performance.now();
+            this.frame_count=0;
+            this.fps=0;
+            this.streak=0;
+            this.longest_streak=0;
+            this.sspa=0;
+            this.score=0; // not implemented yet
+        },
+        count: function(stat_type){
+            switch(stat_type) {
+                case 'seq_correct':
+                    this.seq_correct++;
+                    this.seq_trials++;
+                    this.streak++;
+                    break;
+                case 'seq_incorrect':
+                    this.seq_trials++;
+                    this.streak=0;
+                    break;
+                case 'foil_correct':
+                    this.foil_correct++;
+                    this.foil_trials++;
+                    this.streak++;
+                    break;
+                case 'foil_incorrect':
+                    this.foil_trials++;
+                    this.streak=0;
+                    break;
+            }
+            if(this.seq_trials>0) this.seq_pc=((this.seq_correct/this.seq_trials)*100);
+            if(this.foil_trials>0) this.foil_pc=((this.foil_correct/this.foil_trials)*100);
+            if(this.streak>this.longest_streak) this.longest_streak=this.streak;
+            if(this.foil_pc>0 && this.seq_pc>0) this.sspa=this.seq_pc-this.foil_pc;
+        },
+        fps_update: function() {
+            var curr_time=window.performance.now();
+            this.fps=(this.frame_count*1000)/(curr_time-this.last_fps);
+            this.last_fps=curr_time;
+            this.frame_count=0;
+        },
+        fps_count: function() {
+            this.frame_count++;
+            if ((window.performance.now()-this.last_fps)>3000) this.fps_update();
+        }
+        // add score function, fps update
+    }
+
+    // reuse unactive cue elements?  Might improve performance
+    function launch_cue(lane_num,launch_time,trial){
+        for (var i=0;i<cue_set.length;i++){ // re-use inactive cue elements
+            if(cue_set[i].active==false){
+                cue_set[i].launch(lane_num,launch_time,trial,current_speed*1000.0);
+                return;
+            }
+        }
+        var new_cue = new cue();
+        new_cue.launch(lane_num,launch_time,trial,current_speed*1000.0);
+        cue_set.push(new_cue);
+    }
+
+    function activate_pos_flash(key_lane) {
+        for(var i=0;i<anim_list.length;i++) {
+            if(anim_list[i].anim_type=='flash-pos' && anim_list[i].anim_args[0]==key_lane) {
+                anim_list[i].active=true;
+                anim_list[i].frame_count=0; // reset frame count just in case it is already active
+                return;
+            }
+        }
+    }
+
+    function activate_neg_flash(key_lane) {
+        for(var i=0;i<anim_list.length;i++) {
+            if(anim_list[i].anim_type=='flash-neg' && anim_list[i].anim_args[0]==key_lane) {
+                anim_list[i].active=true;
+                anim_list[i].frame_count=0; // reset frame count just in case it is already active
+                return;
+            }
+        }
+    }
+
+    // args[0] is trial_number, others are for passing to log_response
+    function score_response(event_type,cue_index,key_lane,args){
+        if(event_type=='hit'){ // args -- [cue_set[closest_index].trial_num, key, cue_set[closest_index].position.toFixed(3)]
+            cue_set[cue_index].scored = true;
+            var trial_num=cue_set[cue_index].trial_num;
+            if(cfg['code_pattern'][trial_num]==1) stats.count('seq_correct');
+            else stats.count('foil_correct');
+            if(cfg['adaptive_speed']!=0) Speeder.score_correct(trial_num);
+            if(cfg['feedback']=='on' || cfg['feedback']=='pos' || cfg['feedback']=='all') activate_pos_flash(key_lane);
+            if(cfg['feedback_remove_cue']=='all' || cfg['feedback_remove_cue']=='pos') cue_set[cue_index].active = false;
+        }
+        else if(event_type=='miss' || event_type=='err') {
+            if(cue_index>=0) { // cue_index might not be set if stray key
+                trial_num=cue_set[cue_index].trial_num;
+                if(cfg['adaptive_speed']!=0 && cue_set[cue_index].scored==false) Speeder.score_incorrect(trial_num); // only adjust speed if not stray key and not scored already
+                cue_set[cue_index].scored = true;
+                if(cfg['feedback_remove_cue']=='all' || cfg['feedback_remove_cue']=='pos') cue_set[cue_index].active = false;
+                if(cfg['code_pattern'][trial_num]==1) stats.count('seq_incorrect');
+                else stats.count('foil_incorrect');
+            }
+            if(key_lane>=0 && event_type=='err' && (cfg['feedback']=='on' || cfg['feedback']=='neg' || cfg['feedback']=='all'))
+                activate_neg_flash(key_lane);
+        }
+        log_event(event_type,args);
+    }
+
+    function next_session_state() {
+        session_state_counter++;
+        if(session_state_counter>session.length){ // all done with the session structure
+            stop();
+            return;
+        }
+        var t = session[session_state_counter][0];
+        if (t == "Break:") {    // Otherwise, session token type determines next state
+            session_state = 1;
+            break_image_file=session[session_state_counter][1];
+        }
+        else if (t == "Trials:") {
+            session_state = 2;
+            block_trial_max = current_cue+Number(session[session_state_counter][1]);
+            stats.reset();
+
+            // reset variables for the next block start
+            block_start = window.performance.now();
+            last_launch = window.performance.now();
+            log_event('block_start',[0]);
+        }
+        else if (t == "Demo:") {
+            session_state = 3;
+        }
+        else if (t == "Disable_adaptive_timing:") {
+            cfg['adaptive_speed']=0;
+            next_session_state();
+        } else if (t == "Feedback:") {
+            cfg['feedback']=session[session_state_counter][1];
+            next_session_state();
+        }
+        // SetSpeed: request status event from server
+    }
+
+    // Main draw loop: State variables
+        // state 0: initialize, load config, parse, preloading images
+        // state 0.5: waiting to begin
+        // state 1: Break message
+        // state 2: Trials
+        // state 3: Demo -- Deprecated for online version
+
+        // To do: speed change, adaptive on/off, request status from server?
+        //    Disable_adaptive_timing -- turn off adaptive timing mid-experiment
+        //    Feedback: on/pos/neg/none -- change feedback structure
+        //    Progress_bar_off
+        //    Feedback_text_off
+
+    function end_block() {
+        if(current_cue<block_trial_max) { // block end was forced
+            current_cue=block_trial_max;
+        }
+        ServerHelper.upload_data('partial',response_log);
+        var status_log=["Trial: "+current_cue.toString(),"Speed: "+current_speed.toString(),"Date: "+new Date().toString()];
+        ServerHelper.upload_data('status',status_log);
+        cue_set=[];
+        next_session_state();
+    }
+
+    function draw(){
+        var curr_time=window.performance.now();
+        var elap = (curr_time-last_launch)/1000.0;  // seconds since last cue launch
+
+        ctx.clearRect(0,0, canvas.width, canvas.height);
+        if(session_state==0){      // before start
+            log_event('loaded_config',[0]);
+            initialize_screen();   // initialize screen elements
+            session_state_counter=0;
+            log_event('begin',[0]);
+            current_cue=0;
+            initialized=true;
+            session_state=0.5;     // to make sure this only runs once
+        } else if(session_state==0.5) { // loaded but waiting to begin
+            ctx.font = "48px Arial";
+            ctx.fillStyle='black';
+            ctx.textAlign="center";
+            ctx.fillText("Press Enter to begin",cfg['width']/2.0,cfg['height']/2.0);
+        } else if(session_state==1){ // break
+            var x = cfg['width']/2.0 - images[break_image_file].width/2.0;
+            var y = cfg['height']/2.0 - images[break_image_file].height/2.0
+            ctx.drawImage(images[break_image_file],x,y);
+        } else if(session_state==2) { // main sequence loop
+            stats.fps_count();
+            // redraw main screen elements
+            for (var i=0;i<lane_set.length;i++) { lane_set[i].draw_pad(); }
+
+            // cue loop: check for launching new cues & move existing
+            while (current_cue<block_trial_max && current_cue<cfg['cue_pattern'].length && elap >= (cfg['timing_pattern'][current_cue]*current_speed)) {
+                launch_cue(cfg['cue_pattern'][current_cue], curr_time, current_cue);
+                current_cue++;
+                last_launch = curr_time;
+                elap = 0.0;
+            }
+            var not_empty=false;
+            for (i = 0; i < cue_set.length; i++) {
+                if (cue_set[i].active == true) {
+                    cue_set[i].move();
+                    cue_set[i].draw();
+                    not_empty=true;
+                }
+            }
+
+            // anim loop, done in reverse order to be able to remove inactive items while drawing
+            for (i = 0; i<anim_list.length; i++) {
+                if (anim_list[i].draw()) not_empty=true;
+            }
+            if(not_empty==false && current_cue>=block_trial_max){ // nothing left animated on screen, done with section
+                end_block();
+            }
+        }
+        else if(session_state==3) { // show demo
+            // Demo is deprecated for online version
+            next_session_state();
+        }
+        else { // unknown state
+            ctx.font = "48px Arial";
+            ctx.fillStyle='red';
+            ctx.textAlign="center";
+            ctx.fillText("Unknown state "+session_state_counter.toString(),cfg['width']/2.0,cfg['height']/2.0);
+        }
+        requestId = window.requestAnimationFrame(draw);
+    }
+
+    function keypress(e){
+        var k=String.fromCharCode(e.keyCode);
+
+        if(session_state!=2){ // Current state is waiting for a keypress to continue
+            if(e.keyCode==13 || e.keyCode==27) next_session_state(); // accept return or ESC
+        }
+        else { // cues are moving, process response
+            if(e.keyCode==27) { // ESC to terminate block
+                end_block();
+                return;
+            }
+            if (cue_set==[]) {// no cues are on screen
+                score_response('err',-1,-1,[current_cue,k]); // stray keypress, nothing is on screen
+                return;
+            }
+            // check if key pressed is associated with a lane
+            var key_lane=-1;
+            for(i=0;i<cfg['key_list'].length;i++) {
+                if(k==cfg['key_list'][i]){
+                    key_lane=i;
+                    break;
+                }
+            }
+            var closest_distance=cue_set[0].distance; // first values are the first cue on the list
+            var closest_index=0;
+            for(var i=0;i<cue_set.length;i++){
+                if(cue_set[i].active==true && cue_set[i].scored==false &&
+                        cue_set[i].cue_lane==key_lane &&
+                        cue_set[i].distance<cfg['target_cushion']) { // the key matches and the cue is in the target cushion, score hit
+                    score_response('hit', i, key_lane, [cue_set[i].trial_num, k, cfg['code_pattern'][cue_set[i].trial_num], cue_set[i].distance.toFixed(3), cue_set[i].velocity[1]])
+                    return;
+                } else if(cue_set[i].distance<closest_distance) { // find the closest cue
+                    closest_distance=cue_set[i].distance;
+                    closest_index=i;
+                }
+            }
+            // here, the response was an error since nothing matched as a hit
+            score_response('err', closest_index, key_lane, [cue_set[closest_index].trial_num, k, cfg['code_pattern'][cue_set[closest_index].trial_num]]);
+        }
+    }
+
+    // response logging, SISL .txt format:
+    // timestamp trial_num event_type lane_number speed [cue_pattern code_pattern offset]  -- last 3 only for key responses
+    function log_event(event_type,args) { // args[0] always trial_num for event, others vary
+        var elap = (window.performance.now() - block_start)/1000.0; // time stamp
+        var line = elap.toFixed(2)+"\t"+args[0].toString()+"\t"+event_type+"\t";
+
+        // if event time is a scored response, args[1]=lane, [2]=cue pattern, [3]=code pattern, [4]=offset
+        // if it is a speed up event, args[2+] won't be there
+        line+=cfg['cue_pattern'][args[0]].toString()+"\t"+current_speed.toFixed(2);
+        for(var i=1;i<args.length;i++) { line+="\t"+args[i].toString(); }
+        response_log.push(line);
+    }
+
+    // debugging function for checking logging on main page
+    function report_log(){
+        var output="<table>";
+        var t=[];
+        var j=0;
+        var skip_config=true;
+        for(var i=0;i<response_log.length;i++) {
+            if (skip_config) {
+                if (response_log[i][0] == '#') skip_config = false;
+            }
+            else {
+                output = output + "<tr>";
+                t = response_log[i].split('\t');
+                for (j = 0; j < t.length; j++) {
+                    output = output + "<td widith=\"10%\">" + t[j] + "</td>";
+                }
+                output = output + "</tr>";
+            }
+        }
+        output=output+"</table>";
+        document.getElementById("output_log").innerHTML=output;
+    }
+
+    function initialize_screen() {
+        for (var i = 0; i < cfg['num_keys']; i++) {
+            start_loc = [cfg['start_x'][i], cfg['start_y'][i], cfg['start_z'][i]];
+            target_loc = [cfg['target_x'][i], cfg['target_y'][i], cfg['target_z'][i]];
+            delta = [cfg['delta_x'][i], cfg['delta_y'][i], cfg['delta_z'][i]];
+            b = new lane(start_loc, target_loc, delta, cfg['cue_colors'][i], cfg['cue_size'], cfg['target_color'], cfg['target_diameter']);
+            if (cfg['show_letters'] == 1) {
+                b.add_letter(cfg['letter_x'][i], cfg['letter_y'][i], cfg['letter_color'], cfg['letter_size'], cfg['key_list'][i]);
+            }
+            //document.getElementById("debug3").innerHTML='set letter';
+            lane_set.push(b);
+            b.draw_pad();
+        }
+        // keys
+        for (i = 0; i < cfg['key_list'].length; i++) {
+            lane_set[i].key = cfg['key_list'][i];
+        }
+        // speeder
+        if (cfg['adaptive_speed'] == 1) {
+            Speeder = new speed_adj(cfg['check_every'], cfg['percent_thresholds'], cfg['speed_fraction']);
+        }
+        else Speeder = [];
+        if (cfg.hasOwnProperty('time_to_elapse')) {
+            current_speed = cfg['time_to_elapse']; //Number(cfg['time_to_elapse']); // why does this need to get converted again?
+        }
+        else current_speed = 1.5;
+
+        // screen elements
+        // x location is 200 from right edge
+        var xloc_text=canvas.width-200;
+        for (i = 0; i < cfg['on_screen_feedback'].length; i++) {
+            var a = new anim('text', 0, []);
+            a.add_text(xloc_text, cfg['on_screen_feedback'][i]);
+            anim_list.push(a);
+        }
+
+        // keypad flash animation objects
+        for (i = 0; i < lane_set.length; i++) {
+            a = new anim('flash-pos', cfg['feedback_frames'], [i, cfg['feedback_pos_color']]);
+            a.active = false;
+            a.dynamic = true;
+            anim_list.push(a);
+            a = new anim('flash-neg', cfg['feedback_frames'], [i, cfg['feedback_neg_color']]);
+            a.active = false;
+            a.dynamic = true;
+            anim_list.push(a);
+        }
+    }
+
+    function terminate(msg){
+        ctx.clearRect(0,0, 800, 600);
+        ctx.font = "24px Arial";
+        ctx.fillStyle='red';
+        ctx.textAlign="center";
+        ctx.fillText("Terminated: "+msg, 400,300);
+
+        if (requestId)
+            window.cancelAnimationFrame(requestId);
+        requestId = 0;
+        report_log();
+        window.removeEventListener("keydown",keypress, false);
+    }
+
+    function stop() {
+        //if (requestId)
+        //    window.cancelAnimationFrame(requestId);
+        //requestId = 0;
+        window.cancelAnimationFrame(requestId);
+        report_log();
+        ServerHelper.upload_data('complete',response_log);
+        window.removeEventListener("keydown",keypress, false);
+    }
+
+
+    // to do:
+    // 1. session structure -- DONE
+    // 2. change movement structure to have individual velocity -- DONE
+    // 3. Add demo -- DEPRECATED
+    // 4. Add other implemented on-screen events -- DONE
+    // 5. fps tracking for fidelity measure
+    // 6. Dynamic events: floating text & progress bar
+
+
+    function main(){
+        // extract sessiontoken from url
+        var url=document.URL;
+        var params=url.split('?');
+
+        if(params.length<2){
+            console.log("No session token in url"); // should prompt probably
+        }
+        else {
+            t=params[1].match("session=([^&]*)"); // improve this regex to grab all the parameters
+            if(t!=null) {
+                sessionToken=t[1]
+            }
+        }
+        console.log("Session token:"+sessionToken)
+        if (initialized==false) { // if this gets run after initialization, it's a stray button press
+            document.getElementById("start_button").blur();
+            preload_experiment();
+            //requestId = window.requestAnimationFrame(draw);
+        }
+    }
+
+    window.addEventListener("keydown",keypress,false);
+
+</script>
+
+<button id="start_button" onclick="main()">Press to start!</button>
+<button onclick="stop()">Click me to stop!</button>
+
+</body>
+</html>

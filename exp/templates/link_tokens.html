@@ -1,0 +1,9 @@
+{% extends "base_report.html" %}
+
+{% load staticfiles %}
+
+{% block content %}
+    {% for t in tokens %}
+        <li><a href="{% static app %}?session={{ t }}">{% static app %}?session={{ t }}</a></li>
+    {% endfor %}
+{% endblock %}

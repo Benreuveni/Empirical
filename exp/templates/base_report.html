@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <style>
+        #header {
+            background-color: darkcyan;
+            color: white;
+            font-size: 200%;
+            padding:40px;
+            margin:40px }
+        #footer {
+            background-color: darkcyan;
+            color: white;
+            padding:40px;
+            margin:40px;
+            font-size: 75%
+        }
+        #content {
+            padding:40px;
+            margin:40px;
+            font-size: 100%
+        }
+        #table, th, td {
+            border: 1px solid gray;
+            border-collapse: collapse;
+        }
+        #th, td {
+            padding: 5px;
+        }
+    </style>
+    <title>Internet Exp</title>
+</head>
+<body>
+
+<div id="header">
+    {% block header %}
+    <p align="center"><b>Internet Based Behavioral Experimentation</b></p>
+    <hr>
+    {%  endblock %}
+</div>
+
+<div id="content">
+    {%  block content %}
+    {%  endblock %}
+</div>
+
+<div id="footer">
+    {% block footer %}
+    <hr>
+    <table width="100%">
+        <tr>
+            <td align="left"><em>Written by PJR</em></td>
+            <td align="right"><em>Built on Django</em></td>
+        </tr>
+    </table>
+    {%  endblock %}
+</div>
+
+</body>
+</html>

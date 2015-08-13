@@ -1,0 +1,31 @@
+{% extends "base_report.html" %}
+
+{% block content %}
+    <h1>Experiment Name: {{ exp.name }}</h1>
+    <h3>Created on {{ exp.date }}</h3>
+    <h3>Contains {{ exp.num_sessions }} Sessions</h3>
+
+    <ul>
+    <li><a href="{% url 'exp_index' %}">Back to experiment index</a></li>
+    <li><a href="{% url 'exp_tokens' session %}">Generate link tokens</a></li>
+    <li><a href="{% url 'download' session %}">Download all data</a></li>
+    </ul>
+
+    <hr>
+    <table>
+    <tr><th>Cfg Name</th><th>Token</th><th>Data</th></tr>
+    {% for cfg,token,reports in exp.cfg_list %}
+        <tr><td><a href="{% url 'display_config' token %}"> {{ cfg }} </a> </td>
+        <td>{{ token }}</td>
+        <td>
+            {% for event,date in reports %}
+                {{ event }} at {{ date }}
+                {% if not forloop.last %} , {% endif %}
+            {% empty %} No data yet
+            {%  endfor  %}
+        </td>
+        </tr>
+    {% endfor %}
+
+    </table>
+{% endblock %}
